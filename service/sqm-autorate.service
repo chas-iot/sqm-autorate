@@ -1,29 +1,36 @@
 #!/bin/sh /etc/rc.common
-# Copyright (C) 2007 OpenWrt.org
+SERVICE_NAME="sqm-autorate"
+USE_PROCD=1     # used by procd
+START=97        # where to slot into the procd start sequence
+STOP=1          # where to slot into the procd stop sequence
 
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export LUA_CPATH="/usr/lib/lua/5.1/?.so;./?.so;/usr/lib/lua/?.so;/usr/lib/lua/loadall.so"
-export LUA_PATH="./?.lua;/usr/share/lua/5.1/?.lua;/usr/share/lua/5.1/?/init.lua;/usr/share/lua/?.lua;/usr/share/lua/?/init.lua;/usr/lib/lua/?.lua;/usr/lib/lua/?/init.lua"
-
-START=97
-STOP=4
+export LUA_PATH="/usr/lib/sqm-autorate/?.lua;./?.lua;/usr/share/lua/5.1/?.lua;/usr/share/lua/5.1/?/init.lua;/usr/share/lua/?.lua;/usr/share/lua/?/init.lua;/usr/lib/lua/?.lua;/usr/lib/lua/?/init.lua"
 
 PID_FILE=/tmp/run/sqm-autorate.pid
-
-exec &>/tmp/sqm-autorate.log
+CONFIG_FILE="/etc/config/sqm-autorate"
+SQM_CONFIG="/etc/config/sqm"
 
 service_triggers() {
-    procd_add_reload_trigger "sqm-autorate"
+    procd_add_reload_trigger "$SERVICE_NAME"
 }
 
-start() {
-    cd /usr/lib/sqm-autorate
-    lua sqm-autorate.lua &
-    echo $! >/tmp/run/sqm-autorate.pid
-}
+start_service() {
+    config_load "$SERVICE_NAME"
 
-stop() {
-    if [ -f $PID_FILE ]; then
-        kill -9 "$(cat $PID_FILE)" && rm -f $PID_FILE
-    fi
+    local use_syslog
+    config_get use_syslog @output[0] use_system_log
+
+    procd_open_instance
+
+    procd_set_param command /usr/lib/sqm-autorate/sqm-autorate.lua
+
+    procd_set_param respawn "${respawn_threshold:-3600}" "${respawn_timeout:-5}" "${respawn_retry:-5}"
+    procd_set_param pidfile $PID_FILE
+    procd_set_param file "$CONFIG_FILE" "$SQM_CONFIG"
+    procd_set_param stdout "$use_syslog"
+    procd_set_param stderr "$use_syslog"
+
+    procd_close_instance
 }
