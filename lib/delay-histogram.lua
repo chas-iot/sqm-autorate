@@ -146,10 +146,6 @@ local use_relative_low_load = false  -- low load can be measure in relative (tx_
 
 -- values (constants) to be set in M.initialise from settings
 local sufficient_readings_count = nil -- calculated from sufficient_seconds above
-local upload_threshold_default = nil
-local download_threshold_default = nil
-local min_upload_speed = nil
-local min_download_speed = nil
 
 -- utility functions to setup or import in M.initialise
 local limit
@@ -159,14 +155,8 @@ local logger
 local loglevel
 local util
 
--- local variables
-local upload_histogram = {}
-local upload_count = {} -- the histogram sub-totals
-local upload_result_prev = 0
-
-local download_histogram = {}
-local download_count = {}
-local download_result_prev = 0
+-- Per-direction state: each entry bundles histogram data, thresholds, and reading key mappings
+local directions = {} -- populated in M.initialise
 
 local histogram_start_time = {}   -- the time the histogram was initialised, for reporting
 
@@ -176,22 +166,37 @@ local last_recalculated_time = 90 -- start the first recalculation 90s later, to
 
 local first_run = false
 
+local function make_direction(config)
+    return {
+        histogram = {},           -- [histogram_no] = array of delay counts
+        count = {},               -- [histogram_no] = total readings count
+        result_prev = 0,          -- previous threshold result for change detection
+        threshold_default = config.threshold_default, -- fallback when insufficient data
+        min_speed = config.min_speed,                 -- minimum speed for absolute low-load check
+        label = config.label,                         -- display label ("UP  " or "DOWN")
+        -- Reading key mappings (keys into the readings table)
+        load_key = config.load_key,                   -- "tx_load" or "rx_load"
+        utilisation_key = config.utilisation_key,      -- "up_utilisation" or "down_utilisation"
+        del_stat_key = config.del_stat_key,            -- "up_del_stat" or "down_del_stat"
+        next_rate_key = config.next_rate_key,          -- "next_ul_rate" or "next_dl_rate"
+        cur_rate_key = config.cur_rate_key,            -- "cur_ul_rate" or "cur_dl_rate"
+        -- Result key mappings (keys in the results table)
+        threshold_result_key = config.threshold_result_key, -- "ul_max_delta_owd" or "dl_max_delta_owd"
+        good_count_key = config.good_count_key,             -- "upload_good_count" or "download_good_count"
+    }
+end
+
 local function initialise_histogram(new_histogram, now)
     -- initialise the new slot
     histogram_start_time[new_histogram] = now
 
-    upload_histogram[new_histogram] = {}
-    upload_count[new_histogram] = 0
-    local t = upload_histogram[new_histogram]
-    for i = min_allowed_threshold, max_allowed_threshold do
-        t[i] = 0
-    end
-
-    download_histogram[new_histogram] = {}
-    download_count[new_histogram] = 0
-    t = download_histogram[new_histogram]
-    for i = min_allowed_threshold, max_allowed_threshold do
-        t[i] = 0
+    for _, dir in ipairs(directions) do
+        dir.histogram[new_histogram] = {}
+        dir.count[new_histogram] = 0
+        local t = dir.histogram[new_histogram]
+        for i = min_allowed_threshold, max_allowed_threshold do
+            t[i] = 0
+        end
     end
 
     if first_run then
@@ -219,14 +224,37 @@ function M.initialise(requires, settings)
     loglevel = util.loglevel
     histogram_log_level = loglevel[histogram_log_level] -- get the correct logging structure
 
-    min_upload_speed = settings.min_ul_rate
-    min_download_speed = settings.min_dl_rate
+    -- Create per-direction state
+    directions = {
+        make_direction({
+            threshold_default = settings.ul_max_delta_owd,
+            min_speed = settings.min_ul_rate,
+            label = "UP  ",
+            load_key = "tx_load",
+            utilisation_key = "up_utilisation",
+            del_stat_key = "up_del_stat",
+            next_rate_key = "next_ul_rate",
+            cur_rate_key = "cur_ul_rate",
+            threshold_result_key = "ul_max_delta_owd",
+            good_count_key = "upload_good_count",
+        }),
+        make_direction({
+            threshold_default = settings.dl_max_delta_owd,
+            min_speed = settings.min_dl_rate,
+            label = "DOWN",
+            load_key = "rx_load",
+            utilisation_key = "down_utilisation",
+            del_stat_key = "down_del_stat",
+            next_rate_key = "next_dl_rate",
+            cur_rate_key = "cur_dl_rate",
+            threshold_result_key = "dl_max_delta_owd",
+            good_count_key = "download_good_count",
+        }),
+    }
 
-    upload_threshold_default = settings.ul_max_delta_owd
-    download_threshold_default = settings.dl_max_delta_owd
-
-    upload_result_prev = upload_threshold_default
-    download_result_prev = download_threshold_default
+    for _, dir in ipairs(directions) do
+        dir.result_prev = dir.threshold_default
+    end
 
     -- load UCI settings (if any)
     if settings.plugin then
@@ -289,8 +317,9 @@ function M.initialise(requires, settings)
     return M
 end
 
-local function print_histogram(histogram_no, upload_highlight, download_highlight, now)
+local function print_histogram(histogram_no, dir_highlights, now)
     -- shows the calculated delay in relation to the histogram
+    -- dir_highlights[i] corresponds to directions[i]
     local decorate = function(i, level)
         if i < level then
             return '|'
@@ -305,12 +334,15 @@ local function print_histogram(histogram_no, upload_highlight, download_highligh
     local string_table = {}
     string_table[1] = "delay histogram"
 
-    local print_histo = function(histogram, total, description, highlight)
+    for idx, dir in ipairs(directions) do
+        local histogram = dir.histogram[histogram_no]
+        local total = dir.count[histogram_no]
+        local highlight = dir_highlights[idx]
         if total > 0 then
             local count = 0
             string_table[#string_table + 1] = string.format(
                 "%4s    s: %5d  #: %5d",
-                description, (now - histogram_start_time[histogram_no]), total)
+                dir.label, (now - histogram_start_time[histogram_no]), total)
             for j = min_allowed_threshold, max_allowed_threshold do
                 count = count + histogram[j]
                 if histogram[j] > 0 or j == highlight then
@@ -321,9 +353,6 @@ local function print_histogram(histogram_no, upload_highlight, download_highligh
             end
         end
     end
-
-    print_histo(upload_histogram[histogram_no], upload_count[histogram_no], "UP  ", upload_highlight)
-    print_histo(download_histogram[histogram_no], download_count[histogram_no], "DOWN", download_highlight)
 
     logger(histogram_log_level, table.concat(string_table, "\n    "))
 end
@@ -368,70 +397,55 @@ local function calculate_thresholds(histogram_no, print_it, now)
         return result
     end
 
-    local upload_delay_threshold = calc_threshold(upload_histogram[histogram_no], upload_count[histogram_no])
-    if upload_delay_threshold then
-        results.upload_good_count = true
-    else
-        upload_delay_threshold = upload_threshold_default
-    end
-    local download_delay_threshold = calc_threshold(download_histogram[histogram_no], download_count[histogram_no])
-    if download_delay_threshold then
-        results.download_good_count = true
-    else
-        download_delay_threshold = download_threshold_default
+    local dir_highlights = {}
+    local threshold_changed = false
+
+    for idx, dir in ipairs(directions) do
+        local delay_threshold = calc_threshold(dir.histogram[histogram_no], dir.count[histogram_no])
+        if delay_threshold then
+            results[dir.good_count_key] = true
+        else
+            delay_threshold = dir.threshold_default
+        end
+        dir_highlights[idx] = delay_threshold
+        results[dir.threshold_result_key] = delay_threshold
+
+        if delay_threshold ~= dir.result_prev then
+            threshold_changed = true
+        end
+        dir.result_prev = util.to_integer(delay_threshold)
     end
 
-    if print_it
-        or upload_delay_threshold ~= upload_result_prev
-        or download_delay_threshold ~= download_result_prev then
-        print_histogram(histogram_no, upload_delay_threshold, download_delay_threshold, now)
+    if print_it or threshold_changed then
+        print_histogram(histogram_no, dir_highlights, now)
     end
-    upload_result_prev = util.to_integer(upload_delay_threshold)
-    download_result_prev = util.to_integer(download_delay_threshold)
 
-    results.ul_max_delta_owd = upload_delay_threshold
-    results.dl_max_delta_owd = download_delay_threshold
     return results
 end
 
 
 local function adjust_speed_reset(readings, results, histogram_no)
-    if results.upload_good_count
-        and readings.next_ul_rate <= min_upload_speed
-        and readings.next_ul_rate < readings.cur_ul_rate then
-        local upload_delay = limit(ceil(readings.up_del_stat), min_allowed_threshold, max_allowed_threshold)
-        if upload_delay > (results.ul_max_delta_owd or upload_threshold_default) then
-            local t = upload_histogram[histogram_no]
-            local x = 0
-            -- find the number of delays at this level and higher
-            for i = upload_delay, max_allowed_threshold do
-                x = x + t[i]
-            end
-            if x == 1 then
-                -- first delay, so no drop
-                results.next_ul_rate = readings.cur_ul_rate
-            else
-                -- x should not be larger than 9 (original assumptions)
-                -- after that, the delay threshold will increase
-                results.next_ul_rate = floor(min_upload_speed + (readings.cur_ul_rate - min_upload_speed) / 2)
-            end
-        end
-    end
-
-    if results.download_good_count
-        and readings.next_dl_rate <= min_download_speed
-        and readings.next_dl_rate < readings.cur_dl_rate then
-        local download_delay = limit(ceil(readings.down_del_stat), min_allowed_threshold, max_allowed_threshold)
-        if download_delay > (results.dl_max_delta_owd or download_threshold_default) then
-            local t = download_histogram[histogram_no]
-            local x = 0
-            for i = download_delay, max_allowed_threshold do
-                x = x + t[i]
-            end
-            if x == 1 then
-                results.next_dl_rate = readings.cur_dl_rate
-            else
-                results.next_dl_rate = floor(min_download_speed + (readings.cur_dl_rate - min_download_speed) / 2)
+    for _, dir in ipairs(directions) do
+        if results[dir.good_count_key]
+            and readings[dir.next_rate_key] <= dir.min_speed
+            and readings[dir.next_rate_key] < readings[dir.cur_rate_key] then
+            local delay = limit(ceil(readings[dir.del_stat_key]), min_allowed_threshold, max_allowed_threshold)
+            if delay > (results[dir.threshold_result_key] or dir.threshold_default) then
+                local t = dir.histogram[histogram_no]
+                local x = 0
+                -- find the number of delays at this level and higher
+                for i = delay, max_allowed_threshold do
+                    x = x + t[i]
+                end
+                if x == 1 then
+                    -- first delay, so no drop
+                    results[dir.next_rate_key] = readings[dir.cur_rate_key]
+                else
+                    -- x should not be larger than 9 (original assumptions)
+                    -- after that, the delay threshold will increase
+                    results[dir.next_rate_key] = floor(dir.min_speed +
+                        (readings[dir.cur_rate_key] - dir.min_speed) / 2)
+                end
             end
         end
     end
@@ -448,34 +462,34 @@ function M.process(readings)
 
     if new_histogram_no ~= latest_histogram_no then
         if latest_histogram_no > 0 then -- first time through, there's nothing to print
-            print_histogram(new_histogram_no, upload_result_prev, download_result_prev, current_time)
+            local prev_highlights = {}
+            for idx, dir in ipairs(directions) do
+                prev_highlights[idx] = dir.result_prev
+            end
+            print_histogram(new_histogram_no, prev_highlights, current_time)
         end
         -- every hour, the next histogram is re-initialised to 0
         latest_histogram_no = initialise_histogram(new_histogram_no, current_time)
     end
 
-    -- ignore readings when the network is in use
-    if (use_relative_low_load and readings.tx_load <= low_load_threshold)
-        or (not use_relative_low_load and readings.up_utilisation <= min_upload_speed) then
-        -- the bottom and top buckets are 'asymmetric', covering many more delays that are 'less' interesting
-        local upload_delay = limit(ceil(readings.up_del_stat), min_allowed_threshold, max_allowed_threshold)
-
-        -- update all histograms, newest, oldest, and in-between
-        for i = 1, number_of_histograms do
-            local t = upload_histogram[i]
-            t[upload_delay] = t[upload_delay] + 1
-            upload_count[i] = upload_count[i] + 1
+    -- Collect histogram data when network load is low
+    for _, dir in ipairs(directions) do
+        local is_low_load
+        if use_relative_low_load then
+            is_low_load = readings[dir.load_key] <= low_load_threshold
+        else
+            is_low_load = readings[dir.utilisation_key] <= dir.min_speed
         end
-    end
 
-    -- ignore readings when the network is in use
-    if (use_relative_low_load and readings.rx_load <= low_load_threshold)
-        or (not use_relative_low_load and readings.down_utilisation <= min_download_speed) then
-        local download_delay = limit(ceil(readings.down_del_stat), min_allowed_threshold, max_allowed_threshold)
-        for i = 1, number_of_histograms do
-            local t = download_histogram[i]
-            t[download_delay] = t[download_delay] + 1
-            download_count[i] = download_count[i] + 1
+        if is_low_load then
+            -- the bottom and top buckets are 'asymmetric', covering many more delays that are 'less' interesting
+            local delay = limit(ceil(readings[dir.del_stat_key]), min_allowed_threshold, max_allowed_threshold)
+            -- update all histograms, newest, oldest, and in-between
+            for i = 1, number_of_histograms do
+                local t = dir.histogram[i]
+                t[delay] = t[delay] + 1
+                dir.count[i] = dir.count[i] + 1
+            end
         end
     end
 
@@ -483,11 +497,14 @@ function M.process(readings)
 
     -- detect a speed reset
     -- in main rate control loop, this happens when there is a high delay at a low load
-    local speed_reset =
-        (readings.next_ul_rate <= min_upload_speed
-            and readings.next_ul_rate < readings.cur_ul_rate)
-        or (readings.next_dl_rate <= min_download_speed
-            and readings.next_dl_rate < readings.cur_dl_rate)
+    local speed_reset = false
+    for _, dir in ipairs(directions) do
+        if readings[dir.next_rate_key] <= dir.min_speed
+            and readings[dir.next_rate_key] < readings[dir.cur_rate_key] then
+            speed_reset = true
+            break
+        end
+    end
 
     if ((current_time - last_recalculated_time) >= recalculation_seconds)
         or speed_reset then
@@ -507,8 +524,9 @@ function M.process(readings)
             results = adjust_speed_reset(readings, results, oldest_histogram_no)
         end
 
-        upload_result_prev = results.ul_max_delta_owd
-        download_result_prev = results.dl_max_delta_owd
+        for _, dir in ipairs(directions) do
+            dir.result_prev = results[dir.threshold_result_key]
+        end
     end
 
     return results
