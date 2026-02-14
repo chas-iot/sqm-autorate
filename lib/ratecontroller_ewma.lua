@@ -58,6 +58,33 @@ local function read_stats_file(file)
     return bytes
 end
 
+local function read_or_reopen_stats(file, path, label)
+    local bytes = read_stats_file(file)
+    if bytes then
+        return bytes, file
+    end
+
+    -- Read failed; close and re-open the file
+    util.logger(util.loglevel.WARN, label .. " stats file could not be read, re-opening: " .. path)
+    if file then
+        io.close(file)
+    end
+
+    file = io.open(path)
+    if not file then
+        util.logger(util.loglevel.ERROR, "Could not re-open " .. label .. " stats file: " .. path)
+        return nil, nil
+    end
+
+    bytes = read_stats_file(file)
+    if not bytes then
+        util.logger(util.loglevel.ERROR, "Could not read " .. label .. " stats file after re-open: " .. path)
+        return nil, file
+    end
+
+    return bytes, file
+end
+
 local function update_cake_bandwidth(iface, rate_in_kbit)
     local is_changed = false
     if (iface == dl_if and rate_in_kbit >= min_dl_rate) or
@@ -221,48 +248,17 @@ function M.ratecontrol()
                         " | #down_del = " .. #down_del)
                 end
 
-                local cur_rx_bytes = read_stats_file(rx_bytes_file)
-                local cur_tx_bytes = read_stats_file(tx_bytes_file)
+                local cur_rx_bytes, cur_tx_bytes
+                cur_rx_bytes, rx_bytes_file = read_or_reopen_stats(rx_bytes_file, base.rx_bytes_path, "download")
+                cur_tx_bytes, tx_bytes_file = read_or_reopen_stats(tx_bytes_file, base.tx_bytes_path, "upload")
 
-                if not cur_rx_bytes or not cur_tx_bytes then
-                    util.logger(util.loglevel.WARN,
-                        "One or both stats files could not be read. Skipping rate control algorithm.")
-
-                    if rx_bytes_file then
-                        io.close(rx_bytes_file)
-                    end
-                    if tx_bytes_file then
-                        io.close(tx_bytes_file)
-                    end
-
-                    rx_bytes_file = io.open(base.rx_bytes_path)
-                    if not rx_bytes_file then
-                        util.logger(util.loglevel.ERROR, "Could re-open download stats file: " .. base.rx_bytes_path)
-                    end
-
-                    tx_bytes_file = io.open(base.tx_bytes_path)
-                    if not tx_bytes_file then
-                        util.logger(util.loglevel.ERROR, "Could re-open upload stats file: " .. base.tx_bytes_path)
-                    end
-
-                    cur_rx_bytes = read_stats_file(rx_bytes_file)
-                    if not cur_rx_bytes then
-                        util.logger(util.loglevel.ERROR,
-                            "Could not read download stats file after re-open: " .. rx_bytes_file)
-                    end
-
-                    cur_tx_bytes = read_stats_file(tx_bytes_file)
-                    if not cur_tx_bytes then
-                        util.logger(util.loglevel.ERROR,
-                            "Could not read upload stats file after re-open: " .. tx_bytes_file)
-                    end
-
-                    next_ul_rate = cur_ul_rate
-                    next_dl_rate = cur_dl_rate
-                elseif #up_del == 0 or #down_del == 0 then
+                -- Skip this entire tick when stats are unavailable — don't update
+                -- prev_bytes so the next successful read produces a correct delta
+                -- over the longer interval
+                if cur_rx_bytes and cur_tx_bytes and (#up_del == 0 or #down_del == 0) then
                     next_dl_rate = min_dl_rate
                     next_ul_rate = min_ul_rate
-                else
+                elseif cur_rx_bytes and cur_tx_bytes then
                     table.sort(up_del)
                     table.sort(down_del)
 
@@ -362,52 +358,57 @@ function M.ratecontrol()
                         end
                     else
                         util.logger(util.loglevel.WARN,
-                            "One or both stats files could not be read. Skipping rate control algorithm.")
+                            "One or both delay stats are nil. Skipping rate control algorithm.")
                     end
                 end
 
-                t_prev_bytes = now_t
-                prev_rx_bytes = cur_rx_bytes
-                prev_tx_bytes = cur_tx_bytes
+                if cur_rx_bytes and cur_tx_bytes then
+                    t_prev_bytes = now_t
+                    prev_rx_bytes = cur_rx_bytes
+                    prev_tx_bytes = cur_tx_bytes
 
-                next_ul_rate = floor(max(min_ul_rate, next_ul_rate))
-                next_dl_rate = floor(max(min_dl_rate, next_dl_rate))
+                    next_ul_rate = floor(max(min_ul_rate, next_ul_rate))
+                    next_dl_rate = floor(max(min_dl_rate, next_dl_rate))
 
-                if next_ul_rate ~= cur_ul_rate or next_dl_rate ~= cur_dl_rate then
-                    util.logger(util.loglevel.INFO, "next_ul_rate " .. next_ul_rate .. " next_dl_rate " .. next_dl_rate)
-                end
-
-                -- TC modification
-                if next_dl_rate ~= cur_dl_rate then
-                    update_cake_bandwidth(dl_if, next_dl_rate)
-                end
-                if next_ul_rate ~= cur_ul_rate then
-                    update_cake_bandwidth(ul_if, next_ul_rate)
-                end
-                cur_dl_rate = next_dl_rate
-                cur_ul_rate = next_ul_rate
-
-                lastchg_s, lastchg_ns = util.get_current_time()
-
-                if rx_load and tx_load and up_del_stat and down_del_stat then
-                    util.logger(util.loglevel.DEBUG,
-                        string.format("%d,%d,%f,%f,%f,%f,%d,%d\n", lastchg_s, lastchg_ns, rx_load, tx_load,
-                            down_del_stat, up_del_stat, cur_dl_rate, cur_ul_rate))
-
-                    if output_statistics and csv_fd then
-                        -- output to log file before doing delta on the time
-                        csv_fd:write(string.format("%d,%d,%f,%f,%f,%f,%d,%d\n", lastchg_s, lastchg_ns, rx_load, tx_load,
-                            down_del_stat, up_del_stat, cur_dl_rate, cur_ul_rate))
+                    if next_ul_rate ~= cur_ul_rate or next_dl_rate ~= cur_dl_rate then
+                        util.logger(util.loglevel.INFO,
+                            "next_ul_rate " .. next_ul_rate .. " next_dl_rate " .. next_dl_rate)
                     end
-                else
-                    util.logger(util.loglevel.DEBUG,
-                        string.format(
-                            "Missing value error: rx_load = %s | tx_load = %s | down_del_stat = %s | up_del_stat = %s",
-                            tostring(rx_load), tostring(tx_load), tostring(down_del_stat), tostring(up_del_stat)))
-                end
 
-                lastchg_s = lastchg_s - start_s
-                lastchg_t = lastchg_s + lastchg_ns / 1e9
+                    -- TC modification
+                    if next_dl_rate ~= cur_dl_rate then
+                        update_cake_bandwidth(dl_if, next_dl_rate)
+                    end
+                    if next_ul_rate ~= cur_ul_rate then
+                        update_cake_bandwidth(ul_if, next_ul_rate)
+                    end
+                    cur_dl_rate = next_dl_rate
+                    cur_ul_rate = next_ul_rate
+
+                    lastchg_s, lastchg_ns = util.get_current_time()
+
+                    if rx_load and tx_load and up_del_stat and down_del_stat then
+                        util.logger(util.loglevel.DEBUG,
+                            string.format("%d,%d,%f,%f,%f,%f,%d,%d\n", lastchg_s, lastchg_ns, rx_load, tx_load,
+                                down_del_stat, up_del_stat, cur_dl_rate, cur_ul_rate))
+
+                        if output_statistics and csv_fd then
+                            -- output to log file before doing delta on the time
+                            csv_fd:write(string.format("%d,%d,%f,%f,%f,%f,%d,%d\n",
+                                lastchg_s, lastchg_ns, rx_load, tx_load,
+                                down_del_stat, up_del_stat, cur_dl_rate, cur_ul_rate))
+                        end
+                    else
+                        util.logger(util.loglevel.DEBUG, string.format(
+                            "Missing value error: rx_load = %s | tx_load = %s"
+                            .. " | down_del_stat = %s | up_del_stat = %s",
+                            tostring(rx_load), tostring(tx_load),
+                            tostring(down_del_stat), tostring(up_del_stat)))
+                    end
+
+                    lastchg_s = lastchg_s - start_s
+                    lastchg_t = lastchg_s + lastchg_ns / 1e9
+                end
             end
         end
 
