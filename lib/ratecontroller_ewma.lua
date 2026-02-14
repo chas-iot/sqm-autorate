@@ -110,6 +110,23 @@ function M.ratecontrol()
     local min = math.min
     local random = math.random
 
+    local function calculate_rate_increase(cur_rate, load, base_rate, safe_rates, nrate)
+        safe_rates[nrate] = floor(cur_rate * load)
+        local max_safe = util.maximum(safe_rates)
+        local next_rate = cur_rate * (1 + RATE_EXPONENTIAL_GROWTH * max(0, (1 - cur_rate / max_safe))) +
+            (base_rate * RATE_ADDITIVE_GROWTH)
+        nrate = (nrate + 1) % histsize
+        return next_rate, nrate
+    end
+
+    local function calculate_rate_decrease(cur_rate, load, safe_rates)
+        if #safe_rates > 0 then
+            return min(RATE_DECAY * cur_rate * load, safe_rates[random(#safe_rates) - 1])
+        else
+            return RATE_DECAY * cur_rate * load
+        end
+    end
+
     local sleep_time_ns = floor((min_change_interval % 1) * 1e9)
     local sleep_time_s = floor(min_change_interval)
 
@@ -268,40 +285,20 @@ function M.ratecontrol()
                         --   delay == threshold               → no change (dead band for stability)
                         --   delay > threshold                → decrease rate (multiplicative decay)
 
-                        if up_del_stat and up_del_stat < ul_max_delta_owd
-                            and tx_load > high_load_level then
-                            safe_ul_rates[nrate_up] = floor(cur_ul_rate * tx_load)
-                            local max_ul = util.maximum(safe_ul_rates)
-                            next_ul_rate = cur_ul_rate * (1 + RATE_EXPONENTIAL_GROWTH * max(0, (1 - cur_ul_rate / max_ul))) +
-                                (base_ul_rate * RATE_ADDITIVE_GROWTH)
-                            nrate_up = nrate_up + 1
-                            nrate_up = nrate_up % histsize
+                        if up_del_stat < ul_max_delta_owd and tx_load > high_load_level then
+                            next_ul_rate, nrate_up = calculate_rate_increase(
+                                cur_ul_rate, tx_load, base_ul_rate, safe_ul_rates, nrate_up)
                         end
-                        if down_del_stat and down_del_stat < dl_max_delta_owd
-                            and rx_load > high_load_level then
-                            safe_dl_rates[nrate_down] = floor(cur_dl_rate * rx_load)
-                            local max_dl = util.maximum(safe_dl_rates)
-                            next_dl_rate = cur_dl_rate * (1 + RATE_EXPONENTIAL_GROWTH * max(0, (1 - cur_dl_rate / max_dl))) +
-                                (base_dl_rate * RATE_ADDITIVE_GROWTH)
-                            nrate_down = nrate_down + 1
-                            nrate_down = nrate_down % histsize
+                        if down_del_stat < dl_max_delta_owd and rx_load > high_load_level then
+                            next_dl_rate, nrate_down = calculate_rate_increase(
+                                cur_dl_rate, rx_load, base_dl_rate, safe_dl_rates, nrate_down)
                         end
 
                         if up_del_stat > ul_max_delta_owd then
-                            if #safe_ul_rates > 0 then
-                                next_ul_rate = min(RATE_DECAY * cur_ul_rate * tx_load,
-                                    safe_ul_rates[random(#safe_ul_rates) - 1])
-                            else
-                                next_ul_rate = RATE_DECAY * cur_ul_rate * tx_load
-                            end
+                            next_ul_rate = calculate_rate_decrease(cur_ul_rate, tx_load, safe_ul_rates)
                         end
                         if down_del_stat > dl_max_delta_owd then
-                            if #safe_dl_rates > 0 then
-                                next_dl_rate = min(RATE_DECAY * cur_dl_rate * rx_load,
-                                    safe_dl_rates[random(#safe_dl_rates) - 1])
-                            else
-                                next_dl_rate = RATE_DECAY * cur_dl_rate * rx_load
-                            end
+                            next_dl_rate = calculate_rate_decrease(cur_dl_rate, rx_load, safe_dl_rates)
                         end
 
                         if plugin_ratecontrol then
