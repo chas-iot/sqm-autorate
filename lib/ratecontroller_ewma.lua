@@ -24,6 +24,14 @@ local os = require 'os'
 local string = require 'string'
 local util = require 'utility'
 
+-- Rate control constants
+local BYTES_TO_KBITS_FACTOR = 8 / 1000  -- bytes/sec to kbit/s: 8 bits/byte ÷ 1000 bits/kbit
+local RATE_EXPONENTIAL_GROWTH = 0.1      -- growth factor chasing historical max safe rate
+local RATE_ADDITIVE_GROWTH = 0.03        -- floor growth as fraction of base_rate
+local RATE_DECAY = 0.9                   -- multiplicative decay when delay exceeds threshold
+local INITIAL_RATE_FRACTION = 0.6        -- starting CAKE bandwidth as fraction of base
+local MIN_REFLECTOR_COUNT = 5            -- minimum reflectors before triggering reselection
+
 local settings, owd_data, reflector_data, reselector_channel --, signal_to_ratecontrol
 
 local dl_if
@@ -111,8 +119,8 @@ function M.ratecontrol()
     local lastchg_t = lastchg_s - start_s + lastchg_ns / 1e9
     local lastdump_t = lastchg_t - 310
 
-    local cur_dl_rate = base_dl_rate * 0.6
-    local cur_ul_rate = base_ul_rate * 0.6
+    local cur_dl_rate = base_dl_rate * INITIAL_RATE_FRACTION
+    local cur_ul_rate = base_ul_rate * INITIAL_RATE_FRACTION
     update_cake_bandwidth(dl_if, cur_dl_rate)
     update_cake_bandwidth(ul_if, cur_ul_rate)
 
@@ -189,7 +197,7 @@ function M.ratecontrol()
                             "  down_del: " .. down_del[#down_del])
                     end
                 end
-                if #up_del < 5 or #down_del < 5 then
+                if #up_del < MIN_REFLECTOR_COUNT or #down_del < MIN_REFLECTOR_COUNT then
                     -- trigger reselection here through the Linda channel
                     reselector_channel:send("reselect", 1)
                     util.logger(util.loglevel.INFO, "Reselect signaled: #up_del = " .. #up_del ..
@@ -245,13 +253,9 @@ function M.ratecontrol()
                     down_del_stat = util.a_else_b(down_del[3], down_del[1])
 
                     if up_del_stat and down_del_stat then
-                        -- TODO - find where the (8 / 1000) comes from and
-                        -- i. convert to a pre-computed factor
-                        -- ii. ideally, see if it can be defined in terms of constants, eg ticks per
-                        --     second and number of active reflectors
-                        down_utilisation = (8 / 1000) * (cur_rx_bytes - prev_rx_bytes) / (now_t - t_prev_bytes)
+                        down_utilisation = BYTES_TO_KBITS_FACTOR * (cur_rx_bytes - prev_rx_bytes) / (now_t - t_prev_bytes)
                         rx_load = down_utilisation / cur_dl_rate
-                        up_utilisation = (8 / 1000) * (cur_tx_bytes - prev_tx_bytes) / (now_t - t_prev_bytes)
+                        up_utilisation = BYTES_TO_KBITS_FACTOR * (cur_tx_bytes - prev_tx_bytes) / (now_t - t_prev_bytes)
                         tx_load = up_utilisation / cur_ul_rate
                         next_ul_rate = cur_ul_rate
                         next_dl_rate = cur_dl_rate
@@ -263,8 +267,8 @@ function M.ratecontrol()
                             and tx_load > high_load_level then
                             safe_ul_rates[nrate_up] = floor(cur_ul_rate * tx_load)
                             local max_ul = util.maximum(safe_ul_rates)
-                            next_ul_rate = cur_ul_rate * (1 + .1 * max(0, (1 - cur_ul_rate / max_ul))) +
-                                (base_ul_rate * 0.03)
+                            next_ul_rate = cur_ul_rate * (1 + RATE_EXPONENTIAL_GROWTH * max(0, (1 - cur_ul_rate / max_ul))) +
+                                (base_ul_rate * RATE_ADDITIVE_GROWTH)
                             nrate_up = nrate_up + 1
                             nrate_up = nrate_up % histsize
                         end
@@ -272,26 +276,26 @@ function M.ratecontrol()
                             and rx_load > high_load_level then
                             safe_dl_rates[nrate_down] = floor(cur_dl_rate * rx_load)
                             local max_dl = util.maximum(safe_dl_rates)
-                            next_dl_rate = cur_dl_rate * (1 + .1 * max(0, (1 - cur_dl_rate / max_dl))) +
-                                (base_dl_rate * 0.03)
+                            next_dl_rate = cur_dl_rate * (1 + RATE_EXPONENTIAL_GROWTH * max(0, (1 - cur_dl_rate / max_dl))) +
+                                (base_dl_rate * RATE_ADDITIVE_GROWTH)
                             nrate_down = nrate_down + 1
                             nrate_down = nrate_down % histsize
                         end
 
                         if up_del_stat > ul_max_delta_owd then
                             if #safe_ul_rates > 0 then
-                                next_ul_rate = min(0.9 * cur_ul_rate * tx_load,
+                                next_ul_rate = min(RATE_DECAY * cur_ul_rate * tx_load,
                                     safe_ul_rates[random(#safe_ul_rates) - 1])
                             else
-                                next_ul_rate = 0.9 * cur_ul_rate * tx_load
+                                next_ul_rate = RATE_DECAY * cur_ul_rate * tx_load
                             end
                         end
                         if down_del_stat > dl_max_delta_owd then
                             if #safe_dl_rates > 0 then
-                                next_dl_rate = min(0.9 * cur_dl_rate * rx_load,
+                                next_dl_rate = min(RATE_DECAY * cur_dl_rate * rx_load,
                                     safe_dl_rates[random(#safe_dl_rates) - 1])
                             else
-                                next_dl_rate = 0.9 * cur_dl_rate * rx_load
+                                next_dl_rate = RATE_DECAY * cur_dl_rate * rx_load
                             end
                         end
 
