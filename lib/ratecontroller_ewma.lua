@@ -263,6 +263,11 @@ function M.ratecontrol()
                         util.logger(util.loglevel.DEBUG,
                             "up_del_stat " .. up_del_stat .. " down_del_stat " .. down_del_stat)
 
+                        -- Rate decision has three zones per direction:
+                        --   delay < threshold AND high load  → increase rate (exponential + additive growth)
+                        --   delay == threshold               → no change (dead band for stability)
+                        --   delay > threshold                → decrease rate (multiplicative decay)
+
                         if up_del_stat and up_del_stat < ul_max_delta_owd
                             and tx_load > high_load_level then
                             safe_ul_rates[nrate_up] = floor(cur_ul_rate * tx_load)
