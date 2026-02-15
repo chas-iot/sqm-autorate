@@ -106,7 +106,18 @@ local M = {}
 
 M.name = 'delay-histogram'
 
+-- function pre_process(readings)
+--  Phase 1: called BEFORE rate decisions
+--  Collects histogram data and recalculates delay thresholds
+--  parameters
+--      readings    -- table of readings values from main
+--  returns
+--      results     -- table with ul_max_delta_owd and dl_max_delta_owd (or empty)
+M.pre_process = nil
+
 -- function process(readings)
+--  Phase 2: called AFTER rate decisions
+--  Handles speed reset mitigation only
 --  parameters
 --      readings    -- table of readings values from main
 --  returns
@@ -183,6 +194,7 @@ local function make_direction(config)
         -- Result key mappings (keys in the results table)
         threshold_result_key = config.threshold_result_key, -- "ul_max_delta_owd" or "dl_max_delta_owd"
         good_count_key = config.good_count_key,             -- "upload_good_count" or "download_good_count"
+        good_count = false,       -- whether histogram has sufficient data for this direction
     }
 end
 
@@ -403,9 +415,11 @@ local function calculate_thresholds(histogram_no, print_it, now)
     for idx, dir in ipairs(directions) do
         local delay_threshold = calc_threshold(dir.histogram[histogram_no], dir.count[histogram_no])
         if delay_threshold then
+            dir.good_count = true
             results[dir.good_count_key] = true
         else
             delay_threshold = dir.threshold_default
+            dir.good_count = false
         end
         dir_highlights[idx] = delay_threshold
         results[dir.threshold_result_key] = delay_threshold
@@ -424,13 +438,14 @@ local function calculate_thresholds(histogram_no, print_it, now)
 end
 
 
-local function adjust_speed_reset(readings, results, histogram_no)
+local function adjust_speed_reset(readings, histogram_no)
+    local results = {}
     for _, dir in ipairs(directions) do
-        if results[dir.good_count_key]
+        if dir.good_count
             and readings[dir.next_rate_key] <= dir.min_speed
             and readings[dir.next_rate_key] < readings[dir.cur_rate_key] then
             local delay = limit(ceil(readings[dir.del_stat_key]), min_allowed_threshold, max_allowed_threshold)
-            if delay > (results[dir.threshold_result_key] or dir.threshold_default) then
+            if delay > (dir.result_prev or dir.threshold_default) then
                 local t = dir.histogram[histogram_no]
                 local x = 0
                 -- find the number of delays at this level and higher
@@ -454,7 +469,7 @@ local function adjust_speed_reset(readings, results, histogram_no)
 end
 
 
-function M.process(readings)
+function M.pre_process(readings)
     local current_time = readings.now_s
 
     -- calculate which histogram to initialise
@@ -493,6 +508,30 @@ function M.process(readings)
         end
     end
 
+    -- Periodically recalculate thresholds
+    if (current_time - last_recalculated_time) >= recalculation_seconds then
+        last_recalculated_time = current_time
+
+        -- calculate oldest histogram (with the most readings)
+        local oldest_histogram_no = latest_histogram_no + 1
+        if oldest_histogram_no > number_of_histograms then
+            oldest_histogram_no = 1
+        end
+
+        local results = calculate_thresholds(oldest_histogram_no, false, current_time)
+
+        for _, dir in ipairs(directions) do
+            dir.result_prev = results[dir.threshold_result_key]
+        end
+
+        return results
+    end
+
+    return {}
+end
+
+
+function M.process(readings)
     local results = {}
 
     -- detect a speed reset
@@ -506,27 +545,21 @@ function M.process(readings)
         end
     end
 
-    if ((current_time - last_recalculated_time) >= recalculation_seconds)
-        or speed_reset then
-        last_recalculated_time = current_time
-
+    if speed_reset then
         -- calculate oldest histogram (with the most readings)
         local oldest_histogram_no = latest_histogram_no + 1
         if oldest_histogram_no > number_of_histograms then
             oldest_histogram_no = 1
         end
 
-        -- calculate the delay thresholds from the histogram
-        results = calculate_thresholds(oldest_histogram_no, speed_reset, current_time)
+        -- Force a threshold recalculation on speed reset for freshest data
+        local threshold_results = calculate_thresholds(oldest_histogram_no, true, readings.now_s)
+        for _, dir in ipairs(directions) do
+            dir.result_prev = threshold_results[dir.threshold_result_key]
+        end
 
         -- check whether the histogram allows a speed reset to be mitigated
-        if speed_reset then
-            results = adjust_speed_reset(readings, results, oldest_histogram_no)
-        end
-
-        for _, dir in ipairs(directions) do
-            dir.result_prev = results[dir.threshold_result_key]
-        end
+        results = adjust_speed_reset(readings, oldest_histogram_no)
     end
 
     return results

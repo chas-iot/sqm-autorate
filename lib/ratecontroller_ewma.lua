@@ -266,15 +266,35 @@ function M.ratecontrol()
                     down_del_stat = util.a_else_b(down_del[3], down_del[1])
 
                     if up_del_stat and down_del_stat then
-                        down_utilisation = BYTES_TO_KBITS_FACTOR * (cur_rx_bytes - prev_rx_bytes) / (now_t - t_prev_bytes)
+                        down_utilisation = (cur_rx_bytes - prev_rx_bytes) / (now_t - t_prev_bytes)
+                            * BYTES_TO_KBITS_FACTOR
                         rx_load = down_utilisation / cur_dl_rate
-                        up_utilisation = BYTES_TO_KBITS_FACTOR * (cur_tx_bytes - prev_tx_bytes) / (now_t - t_prev_bytes)
+                        up_utilisation = (cur_tx_bytes - prev_tx_bytes) / (now_t - t_prev_bytes) * BYTES_TO_KBITS_FACTOR
                         tx_load = up_utilisation / cur_ul_rate
                         next_ul_rate = cur_ul_rate
                         next_dl_rate = cur_dl_rate
 
                         util.logger(util.loglevel.DEBUG,
                             "up_del_stat " .. up_del_stat .. " down_del_stat " .. down_del_stat)
+
+                        -- Phase 1: Before rate decisions — let plugin update thresholds
+                        if plugin_ratecontrol and plugin_ratecontrol.pre_process then
+                            local t = plugin_ratecontrol.pre_process({
+                                now_s = now_s,
+                                tx_load = tx_load,
+                                rx_load = rx_load,
+                                up_del_stat = up_del_stat,
+                                down_del_stat = down_del_stat,
+                                up_utilisation = up_utilisation,
+                                down_utilisation = down_utilisation,
+                                cur_ul_rate = cur_ul_rate,
+                                cur_dl_rate = cur_dl_rate
+                            })
+                            if t then
+                                if t.ul_max_delta_owd then ul_max_delta_owd = t.ul_max_delta_owd end
+                                if t.dl_max_delta_owd then dl_max_delta_owd = t.dl_max_delta_owd end
+                            end
+                        end
 
                         -- Rate decision has three zones per direction:
                         --   delay < threshold AND high load  → increase rate (exponential + additive growth)
@@ -297,6 +317,7 @@ function M.ratecontrol()
                             next_dl_rate = calculate_rate_decrease(cur_dl_rate, rx_load, safe_dl_rates)
                         end
 
+                        -- Phase 2: After rate decisions — let plugin override rates
                         if plugin_ratecontrol then
                             local results = plugin_ratecontrol.process({
                                 now_s = now_s,
@@ -350,7 +371,7 @@ function M.ratecontrol()
                                 end
 
                                 if #string_tbl > 1 then
-                                    util.logger(util.loglevel.INFO, table.concat(string_tbl, "\n    "))
+                                    util.logger(util.loglevel.WARN, table.concat(string_tbl, "\n    "))
                                 end
                             else
                                 util.logger(util.loglevel.DEBUG, "No results were sent by rate control plugin.")
