@@ -152,11 +152,6 @@ function log_readings.initialise(requires, settings)
                     string_table[#string_table + 1] = reading .. " " .. op .. " " .. tostring(option_value)
                 end
             end
-            if plugin_settings.log_level then
-                log_level = plugin_settings.log_level
-                string_table[#string_table + 1] = "log_level=" .. log_level
-                log_level = loglevel[log_level]
-            end
         end
         if #string_table > 1 then
             logger(loglevel.WARN, table.concat(string_table, "\n        "))
