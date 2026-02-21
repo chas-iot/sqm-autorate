@@ -118,10 +118,8 @@ function M.reflector_peer_selector()
         candidates = util.shuffle_table(candidates)
 
         local new_peers = {}
-        if #candidates < settings.num_reflectors then
-            settings.num_reflectors = #candidates
-        end
-        for i = 1, settings.num_reflectors, 1 do
+        local num_to_select = math.min(#candidates, settings.num_reflectors)
+        for i = 1, num_to_select, 1 do
             new_peers[#new_peers + 1] = candidates[i][1]
         end
 
