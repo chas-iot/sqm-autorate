@@ -266,10 +266,11 @@ function M.ratecontrol()
                     down_del_stat = util.a_else_b(down_del[3], down_del[1])
 
                     if up_del_stat and down_del_stat then
-                        down_utilisation = (cur_rx_bytes - prev_rx_bytes) / (now_t - t_prev_bytes)
-                            * BYTES_TO_KBITS_FACTOR
+                        down_utilisation = BYTES_TO_KBITS_FACTOR
+                            * (cur_rx_bytes - prev_rx_bytes) / (now_t - t_prev_bytes)
                         rx_load = down_utilisation / cur_dl_rate
-                        up_utilisation = (cur_tx_bytes - prev_tx_bytes) / (now_t - t_prev_bytes) * BYTES_TO_KBITS_FACTOR
+                        up_utilisation = BYTES_TO_KBITS_FACTOR
+                            * (cur_tx_bytes - prev_tx_bytes) / (now_t - t_prev_bytes)
                         tx_load = up_utilisation / cur_ul_rate
                         next_ul_rate = cur_ul_rate
                         next_dl_rate = cur_dl_rate
@@ -279,7 +280,7 @@ function M.ratecontrol()
 
                         -- Phase 1: Before rate decisions — let plugin update thresholds
                         if plugin_ratecontrol and plugin_ratecontrol.pre_process then
-                            local t = plugin_ratecontrol.pre_process({
+                            local results = plugin_ratecontrol.pre_process({
                                 now_s = now_s,
                                 tx_load = tx_load,
                                 rx_load = rx_load,
@@ -290,9 +291,27 @@ function M.ratecontrol()
                                 cur_ul_rate = cur_ul_rate,
                                 cur_dl_rate = cur_dl_rate
                             })
-                            if t then
-                                if t.ul_max_delta_owd then ul_max_delta_owd = t.ul_max_delta_owd end
-                                if t.dl_max_delta_owd then dl_max_delta_owd = t.dl_max_delta_owd end
+                            if results then
+                                local string_tbl = {}
+                                string_tbl[1] = "settings changed by plugin:"
+
+                                local tmp = results.dl_max_delta_owd
+                                if tmp and tmp ~= dl_max_delta_owd then
+                                    string_tbl[#string_tbl + 1] = string.format(
+                                        "dl_max_delta_owd: %.1f -> %.1f",
+                                        dl_max_delta_owd, tmp)
+                                    dl_max_delta_owd = tmp
+                                end
+                                tmp = results.ul_max_delta_owd
+                                if tmp and tmp ~= ul_max_delta_owd then
+                                    string_tbl[#string_tbl + 1] = string.format(
+                                        "ul_max_delta_owd: %.1f -> %.1f",
+                                        ul_max_delta_owd, tmp)
+                                    ul_max_delta_owd = tmp
+                                end
+                                if #string_tbl > 1 then
+                                    util.logger(util.loglevel.WARN, table.concat(string_tbl, "\n    "))
+                                end
                             end
                         end
 
