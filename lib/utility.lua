@@ -119,10 +119,11 @@ function M.a_else_b(a, b)
 end
 
 function M.nsleep(s, ns)
-    -- nanosleep requires integers
+    -- nanosleep requires integers and tv_nsec in [0, 999999999]
+    local total_ns = math.floor(((s % 1.0) * 1e9) + ns)
     time.nanosleep({
-        tv_sec = math.floor(s),
-        tv_nsec = math.floor(((s % 1.0) * 1e9) + ns)
+        tv_sec = math.floor(s) + math.floor(total_ns / 1e9),
+        tv_nsec = total_ns % 1000000000
     })
 end
 
