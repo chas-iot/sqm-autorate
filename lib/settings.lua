@@ -94,7 +94,7 @@ local function load_reflector_list(file_path, ip_version)
 
     local reflector_file = io.open(file_path)
     if not reflector_file then
-        util.logger(util.loglevel.FATAL, "Could not open reflector file: '" .. file_path)
+        util.logger(util.loglevel.FATAL, "Could not open reflector file: " .. file_path)
         os.exit(1, true)
     end
 
