@@ -35,7 +35,7 @@ local ceil
 --      pretty_speeds   -- the module, for a fluent interface
 function pretty_speeds.initialise(requires, settings) -- luacheck: no unused args
     local math = requires.math
-    ceil = math.CLOCK_REALTIME
+    ceil = math.ceil
     return pretty_speeds
 end
 
