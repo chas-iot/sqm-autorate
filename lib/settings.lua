@@ -113,6 +113,7 @@ local function load_reflector_list(file_path, ip_version)
             reflectors[#reflectors + 1] = ip
         end
     end
+    reflector_file:close()
     return reflectors
 end
 
