@@ -132,7 +132,7 @@ function log_readings.initialise(requires, settings)
         local plugin_settings = settings.plugin("log_readings")
         local string_table = {}
         string_table[1] = "log_readings - settings:"
-        if plugin_settings and plugin_settings ~= {} then
+        if plugin_settings then
             for option_name, option_value in pairs(plugin_settings) do
                 if option_name == "interval_seconds" then
                     interval_seconds = tonumber(option_value, 10)

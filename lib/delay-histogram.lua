@@ -273,7 +273,7 @@ function M.initialise(requires, settings)
         local plugin_settings = settings.plugin("delay_histogram")
         local string_table = {}
         string_table[1] = "delay-histogram - settings:"
-        if plugin_settings and plugin_settings ~= {} then
+        if plugin_settings then
             if plugin_settings.histogram_offset_seconds then
                 histogram_offset_seconds = util.to_integer(plugin_settings.histogram_offset_seconds)
                 string_table[#string_table + 1] = "histogram_offset_seconds=" .. tostring(histogram_offset_seconds)
