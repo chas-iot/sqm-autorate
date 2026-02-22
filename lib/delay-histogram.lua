@@ -438,37 +438,6 @@ local function calculate_thresholds(histogram_no, print_it, now)
 end
 
 
-local function adjust_speed_reset(readings, histogram_no)
-    local results = {}
-    for _, dir in ipairs(directions) do
-        if dir.good_count
-            and readings[dir.next_rate_key] <= dir.min_speed
-            and readings[dir.next_rate_key] < readings[dir.cur_rate_key] then
-            local delay = limit(ceil(readings[dir.del_stat_key]), min_allowed_threshold, max_allowed_threshold)
-            if delay > (dir.result_prev or dir.threshold_default) then
-                local t = dir.histogram[histogram_no]
-                local x = 0
-                -- find the number of delays at this level and higher
-                for i = delay, max_allowed_threshold do
-                    x = x + t[i]
-                end
-                if x == 1 then
-                    -- first delay, so no drop
-                    results[dir.next_rate_key] = readings[dir.cur_rate_key]
-                else
-                    -- x should not be larger than 9 (original assumptions)
-                    -- after that, the delay threshold will increase
-                    results[dir.next_rate_key] = floor(dir.min_speed +
-                        (readings[dir.cur_rate_key] - dir.min_speed) / 2)
-                end
-            end
-        end
-    end
-
-    return results
-end
-
-
 function M.pre_process(readings)
     local current_time = readings.now_s
 
@@ -528,6 +497,36 @@ function M.pre_process(readings)
     end
 
     return {}
+end
+
+
+local function adjust_speed_reset(readings, histogram_no)
+    local results = {}
+    for _, dir in ipairs(directions) do
+        if dir.good_count
+            and readings[dir.next_rate_key] <= dir.min_speed
+            and readings[dir.next_rate_key] < readings[dir.cur_rate_key] then
+            local delay = limit(ceil(readings[dir.del_stat_key]), min_allowed_threshold, max_allowed_threshold)
+            if delay > (dir.result_prev or dir.threshold_default) then
+                local t = dir.histogram[histogram_no]
+                local x = 0
+                -- find the number of delays at this level and higher
+                for i = delay, max_allowed_threshold do
+                    x = x + t[i]
+                end
+                if x == 1 then
+                    -- for the first delay, reduce the speed to half way between the current and the minimum
+                    -- however ignore the change when close to the minimum is reached to avoid polluting the logs
+                    local next_speed = floor(dir.min_speed + (readings[dir.cur_rate_key] - dir.min_speed) / 2)
+                    if next_speed > dir.min_speed * 1.1 then
+                        results[dir.next_rate_key] = next_speed
+                    end
+                end
+            end
+        end
+    end
+
+    return results
 end
 
 
