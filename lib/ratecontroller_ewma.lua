@@ -293,24 +293,26 @@ function M.ratecontrol()
                             })
                             if results then
                                 local string_tbl = {}
-                                string_tbl[1] = "settings changed by plugin:"
+                                string_tbl[1] = "sqm-autorate settings changed by plugin:"
 
                                 local tmp = results.dl_max_delta_owd
                                 if tmp and tmp ~= dl_max_delta_owd then
                                     string_tbl[#string_tbl + 1] = string.format(
-                                        "dl_max_delta_owd: %.1f -> %.1f",
+                                        "dl_max_delta_owd: %.0f -> %.0f",
                                         dl_max_delta_owd, tmp)
                                     dl_max_delta_owd = tmp
                                 end
                                 tmp = results.ul_max_delta_owd
                                 if tmp and tmp ~= ul_max_delta_owd then
                                     string_tbl[#string_tbl + 1] = string.format(
-                                        "ul_max_delta_owd: %.1f -> %.1f",
+                                        "ul_max_delta_owd: %.0f -> %.0f",
                                         ul_max_delta_owd, tmp)
                                     ul_max_delta_owd = tmp
                                 end
                                 if #string_tbl > 1 then
-                                    util.logger(util.loglevel.WARN, table.concat(string_tbl, "\n    "))
+                                    local separator = "\n    "
+                                    if #string_tbl == 2 then separator = " " end
+                                    util.logger(util.loglevel.WARN, table.concat(string_tbl, separator))
                                 end
                             end
                         end
@@ -355,12 +357,12 @@ function M.ratecontrol()
                             local next = next
                             if next(results) ~= nil then
                                 local string_tbl = {}
-                                string_tbl[1] = "settings changed by plugin:"
+                                string_tbl[1] = "sqm-autorate settings changed by plugin:"
 
                                 local tmp = results.ul_max_delta_owd
                                 if tmp and tmp ~= ul_max_delta_owd then
                                     string_tbl[#string_tbl + 1] = string.format(
-                                        "ul_max_delta_owd: %.1f -> %.1f",
+                                        "ul_max_delta_owd: %.0f -> %.0f",
                                         ul_max_delta_owd, tmp)
                                     ul_max_delta_owd = tmp
                                 end
@@ -368,7 +370,7 @@ function M.ratecontrol()
                                 tmp = results.dl_max_delta_owd
                                 if tmp and tmp ~= dl_max_delta_owd then
                                     string_tbl[#string_tbl + 1] = string.format(
-                                        "dl_max_delta_owd: %.1f -> %.1f",
+                                        "dl_max_delta_owd: %.0f -> %.0f",
                                         dl_max_delta_owd, tmp)
                                     dl_max_delta_owd = tmp
                                 end
@@ -390,7 +392,9 @@ function M.ratecontrol()
                                 end
 
                                 if #string_tbl > 1 then
-                                    util.logger(util.loglevel.WARN, table.concat(string_tbl, "\n    "))
+                                    local separator = "\n    "
+                                    if #string_tbl == 2 then separator = " " end
+                                    util.logger(util.loglevel.WARN, table.concat(string_tbl, separator))
                                 end
                             else
                                 util.logger(util.loglevel.DEBUG, "No results were sent by rate control plugin.")
